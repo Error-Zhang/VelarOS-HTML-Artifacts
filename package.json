@@ -1,0 +1,27 @@
+{
+  "name": "@velaros/html-artifacts",
+  "version": "0.1.0",
+  "description": "Shared stream protocol and iframe document helpers for VelarOS HTML artifacts.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "bun run clean && tsc -p tsconfig.build.json && node ../../scripts/build/fix-esm-extensions.mjs dist && node ../../scripts/build/copy-velaros-globals-to-dist.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepack": "bun run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
