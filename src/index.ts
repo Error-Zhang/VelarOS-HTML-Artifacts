@@ -1,6 +1,5 @@
 export * from './frame-fit'
 export * from './protocol'
-export * from './repair'
 export * from './security'
 export * from './shell'
 export * from './skill'
