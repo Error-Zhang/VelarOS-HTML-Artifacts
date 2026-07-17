@@ -39,8 +39,51 @@ const DEFAULT_BRIDGE_MESSAGES: HtmlArtifactBridgeMessages = {
   error: 'velaros-html-artifact-error',
 }
 
+// 模型习惯性外包裹(<![CDATA[ ]]> / markdown 代码围栏)在 HTML 里不是透明的:CDATA 头是
+// bogus comment,会一路吞到下一个 '>'——<style> 开标签被吃掉,整段 CSS 变成正文文本
+// (真机踩坑:show_widget 的 widget_code 被 CDATA 包裹,CSS 全文渲染成文字)。渲染前统一
+// 宽容剥除,widget 与 artifact 协议两条链路共用这一个入口;流式半成品允许尾标记尚未到达。
+const SOURCE_FENCE_OPEN_PATTERN = /^```[\w-]*[ \t]*\r?\n/
+const SOURCE_FENCE_CLOSE_PATTERN = /\r?\n```[ \t]*$/
+const SOURCE_CDATA_OPEN = '<![CDATA['
+const SOURCE_CDATA_CLOSE = ']]>'
+
+function stripOuterSourceWrapper(content: string): string {
+  const trimmed = content.trim()
+
+  if (trimmed.startsWith(SOURCE_CDATA_OPEN)) {
+    let inner = trimmed.slice(SOURCE_CDATA_OPEN.length)
+    if (inner.trimEnd().endsWith(SOURCE_CDATA_CLOSE)) {
+      inner = inner.slice(0, inner.lastIndexOf(SOURCE_CDATA_CLOSE))
+    }
+    return inner.trim()
+  }
+
+  const fenceOpen = SOURCE_FENCE_OPEN_PATTERN.exec(trimmed)
+  if (fenceOpen) {
+    let inner = trimmed.slice(fenceOpen[0].length)
+    const fenceClose = SOURCE_FENCE_CLOSE_PATTERN.exec(inner)
+    if (fenceClose) {
+      inner = inner.slice(0, fenceClose.index)
+    }
+    return inner.trim()
+  }
+
+  return content
+}
+
+export function normalizeHtmlArtifactSource(content: string): string {
+  let current = content
+  for (let pass = 0; pass < 3; pass += 1) {
+    const next = stripOuterSourceWrapper(current)
+    if (next === current) return current
+    current = next
+  }
+  return current
+}
+
 export function inferHtmlArtifactContentKind(content: string): HtmlArtifactContentKind {
-  return /^<svg[\s>]/i.test(content.trimStart()) ? 'svg' : 'html'
+  return /^<svg[\s>]/i.test(normalizeHtmlArtifactSource(content).trimStart()) ? 'svg' : 'html'
 }
 
 function resolveBridgeMessages(
@@ -91,14 +134,16 @@ function bridgeHeadScript(messages: HtmlArtifactBridgeMessages): string {
     `window.widgetBridge={send:function(payload){window.parent.postMessage({type:${jsString(messages.generic)},payload:payload},'*')}};` +
     `window.addEventListener('error',function(event){window.__htmlArtifactReportRuntimeError(event&&event.error||event&&event.message||'Artifact error',{phase:'window'});});` +
     `window.addEventListener('unhandledrejection',function(event){window.__htmlArtifactReportRuntimeError(event&&event.reason||'Unhandled artifact promise rejection',{phase:'script'});});` +
-    // 平铺后 iframe 内部无可滚区域,wheel 事件却被 iframe 文档吞掉(跨文档不冒泡到宿主),
-    // 鼠标悬停在制品上时聊天页会滚不动——把无处消化的 wheel 转发给宿主代滚。
+    // 平铺后 iframe 根文档无可滚区域,wheel 事件却被 iframe 文档吞掉(跨文档不冒泡到宿主),
+    // 鼠标悬停在制品上时聊天页会滚不动——把 wheel 转发给宿主代滚。转发发生时必须取消
+    // iframe 内部默认滚动,否则制品里的 overflow 窗口和聊天页会被同一次滚轮同时推动。
     `window.addEventListener('wheel',function(event){` +
     `var doc=document.documentElement||{};` +
-    `if((doc.scrollHeight||0)<=(doc.clientHeight||0)+1&&(doc.scrollWidth||0)<=(doc.clientWidth||0)+1){` +
+    `if(window.parent!==window&&(doc.scrollHeight||0)<=(doc.clientHeight||0)+1&&(doc.scrollWidth||0)<=(doc.clientWidth||0)+1){` +
+    `if(event.cancelable!==false)event.preventDefault();` +
     `window.parent.postMessage({type:${jsString(WIDGET_WHEEL_MESSAGE_TYPE)},deltaY:Number(event.deltaY)||0,deltaX:Number(event.deltaX)||0},'*');` +
     `}` +
-    `},{passive:true});`
+    `},{capture:true,passive:false});`
   )
 }
 
@@ -127,13 +172,19 @@ function resizeTailScript(messages: HtmlArtifactBridgeMessages): string {
     // 平铺硬保证:iframe 高度必须 ≥ 浏览器认定的可滚总高(doc.scrollHeight,含一切
     // padding/margin/溢出),否则内容仍可滚。子元素测量做下限,scrollHeight 补齐真实溢出;
     // 差值 >400px 视为 vh 类反馈回路(内容随 iframe 增高而增高),忽略以防无限增长。
+    // contentFloor=真溢出时刻的 scrollHeight,是内容高的**真值**(scrollHeight>视口时不再被视口
+    // 托底)。收缩不允许低于它——否则「增长信 scrollHeight/收缩信子元素测量」两个来源一旦
+    // 分歧就互搏,iframe 高度在两值间永久振荡、把制品下方正文抖上抖下(真机踩坑)。
+    // DOM 变更时地板归零,内容真变矮时先缩一步、若过头由溢出分支纠正并重建地板,一轮收敛。
+    `var contentFloor=0;` +
     `function measureFullHeight(base){` +
     `var doc=document.documentElement||{};` +
     `var client=doc.clientHeight||0;` +
     `var full=Math.max(doc.scrollHeight||0,(document.body&&document.body.scrollHeight)||0);` +
-    `if(full>client+1){var need=client+Math.min(full-client,400);return Math.max(base,need);}` +
-    `if(base<client-24)return base;` +
-    `return Math.max(base,client);` +
+    `if(full>client+1){contentFloor=full;var need=client+Math.min(full-client,400);return Math.max(base,need);}` +
+    `var target=Math.max(base,contentFloor);` +
+    `if(target<client-24)return target;` +
+    `return Math.max(target,client);` +
     `}` +
     `function reportHeight(){` +
     `var size=measureContentSize(document.body);` +
@@ -141,6 +192,7 @@ function resizeTailScript(messages: HtmlArtifactBridgeMessages): string {
     `window.parent.postMessage({type:${jsString(messages.resize)},height:height,width:size.width,naturalHeight:height,naturalWidth:size.width,rendered:true},'*');` +
     `}` +
     `if(window.ResizeObserver){new ResizeObserver(reportHeight).observe(document.body);}` +
+    `if(window.MutationObserver&&document.body){new MutationObserver(function(){contentFloor=0;}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
     `window.addEventListener('resize',reportHeight);` +
     `window.addEventListener('load',function(){setTimeout(reportHeight,120);setTimeout(reportHeight,420);});` +
     `setTimeout(reportHeight,40);` +
@@ -314,18 +366,27 @@ function liveRenderTailScript(rootId: string, messages: HtmlArtifactBridgeMessag
     `if(overflowWidth>viewportWidth+1)contentWidth=Math.max(contentWidth,overflowWidth);` +
     `var width=contentWidth||viewportWidth||overflowWidth;` +
     `if(target&&target!==body){var bodyRect=body.getBoundingClientRect?body.getBoundingClientRect():{top:0,left:0};var bodyNodes=Array.prototype.slice.call(body.children||[]);bodyNodes.forEach(function(node){if(node===target)return;measureNode(node,bodyRect);});height=Math.max(height,target.scrollHeight||0,target.offsetHeight||0);}` +
+    // 子元素 bottom 是相对 root 顶的偏移:root 之上的空间(body paddingTop/margin)与 body 的
+    // 底部 padding/margin/border 都不在其中。漏算会让子元素测量系统性偏矮(如 16px 上下
+    // padding 共差 48px),与 scrollHeight 真值分歧——这正是振荡的分歧源头,必须补齐。
+    `height+=Math.max(0,Math.ceil((rootRect.top||0)+(window.scrollY||0)));` +
+    `try{var bs=window.getComputedStyle(document.body);height+=(parseFloat(bs.paddingBottom)||0)+(parseFloat(bs.marginBottom)||0)+(parseFloat(bs.borderBottomWidth)||0);}catch(e){}` +
     `return{width:Math.max(1,Math.ceil(width)),height:Math.max(1,Math.ceil(height))};` +
     `}` +
     `var hasRendered=false;` +
     // 平铺硬保证(与静态文档路径同款):高度取 max(子元素测量, doc.scrollHeight),
     // 差值 >400px 视为 vh 反馈回路忽略,保证 iframe 内部零可滚。
+    // contentFloor 同静态路径:真溢出时 scrollHeight=内容真值,收缩不得低于它,杜绝
+    // 「增长信 scrollHeight/收缩信子元素测量」两源分歧互搏振荡;DOM 变更/重渲染时归零。
+    `var contentFloor=0;` +
     `function measureFullHeight(base){` +
     `var doc=document.documentElement||{};` +
     `var client=doc.clientHeight||0;` +
     `var full=Math.max(doc.scrollHeight||0,(document.body&&document.body.scrollHeight)||0);` +
-    `if(full>client+1){var need=client+Math.min(full-client,400);return Math.max(base,need);}` +
-    `if(base<client-24)return base;` +
-    `return Math.max(base,client);` +
+    `if(full>client+1){contentFloor=full;var need=client+Math.min(full-client,400);return Math.max(base,need);}` +
+    `var target=Math.max(base,contentFloor);` +
+    `if(target<client-24)return target;` +
+    `return Math.max(target,client);` +
     `}` +
     `function reportHeight(){` +
     `if(!hasRendered)return;` +
@@ -355,11 +416,11 @@ function liveRenderTailScript(rootId: string, messages: HtmlArtifactBridgeMessag
     `window.addEventListener('message',function(event){` +
     `if(event.source!==window.parent)return;` +
     `var data=event.data||{};` +
-    `if(data.type===${jsString(messages.render)}){render(data.html,data.patches);hasRendered=true;reportSoon();}` +
+    `if(data.type===${jsString(messages.render)}){contentFloor=0;render(data.html,data.patches);hasRendered=true;reportSoon();}` +
     `if(data.type===${jsString(messages.patch)}){queuePatches(data.patches||(data.patch?[data.patch]:[]));}` +
     `});` +
-    `if(window.ResizeObserver){var resizeObserver=new ResizeObserver(reportHeight);if(root)resizeObserver.observe(root);resizeObserver.observe(body);}` +
-    `if(window.MutationObserver){new MutationObserver(reportSoon).observe(body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
+    `if(window.ResizeObserver){var resizeObserver=new ResizeObserver(reportHeight);if(root)resizeObserver.observe(root);if(document.body)resizeObserver.observe(document.body);}` +
+    `if(window.MutationObserver&&document.body){new MutationObserver(function(){contentFloor=0;reportSoon();}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
     `window.addEventListener('resize',reportHeight);` +
     `window.addEventListener('load',function(){setTimeout(reportHeight,80);setTimeout(reportHeight,360);});` +
     `setTimeout(reportHeight,40);` +
@@ -388,9 +449,10 @@ const HIDE_IFRAME_SCROLLBAR_CSS =
   'html,body{scrollbar-width:none;}html::-webkit-scrollbar,body::-webkit-scrollbar{width:0;height:0;display:none;}'
 
 export function buildHtmlArtifactDocument(
-  content: string,
+  rawContent: string,
   options: HtmlArtifactDocumentOptions = {}
 ): string {
+  const content = normalizeHtmlArtifactSource(rawContent)
   const kind = options.contentKind ?? inferHtmlArtifactContentKind(content)
   const messages = resolveBridgeMessages(options.bridgeMessages)
   const bodyStyle = resolveBodyStyle(kind, options.bodyStyle)
