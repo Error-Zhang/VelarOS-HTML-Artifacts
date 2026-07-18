@@ -147,6 +147,42 @@ function bridgeHeadScript(messages: HtmlArtifactBridgeMessages): string {
   )
 }
 
+// 高度守卫(静态/live 两条测量路径共用单源):
+// - contentFloor=真溢出时刻的 scrollHeight,是内容高的**真值**(scrollHeight>视口时不再被视口
+//   托底)。收缩不允许低于它——否则「增长信 scrollHeight/收缩信子元素测量」两个来源一旦
+//   分歧就互搏,iframe 高度在两值间永久振荡、把制品下方正文抖上抖下(真机踩坑)。
+// - viewportCoupled 断 vh 反馈回路:每次按溢出增高后,内容若跟着同步增高(连续两轮
+//   fullΔ≥clientΔ),说明内容高是视口高的函数(100vh/百分比链——流中被关的截断半成品
+//   尤其常见),继续喂高度只会无限膨胀;冻结在当前高度,真实 DOM 变更(resetHeightGuards)
+//   后重新放行。冻结时必须返回 client 而非子元素测量:vh 耦合下子元素 bottom 本身就含
+//   随视口增长的溢出,取它等于绕过冻结继续膨胀。
+// - DOM 变更时守卫整体归零,内容真变矮时先缩一步、若过头由溢出分支纠正并重建地板,一轮收敛。
+function heightGuardScript(): string {
+  return (
+    `var contentFloor=0;var viewportCoupled=false;var growClient=0;var growFull=0;var coupleStrikes=0;` +
+    `function resetHeightGuards(){contentFloor=0;viewportCoupled=false;growClient=0;growFull=0;coupleStrikes=0;}` +
+    `function measureFullHeight(base){` +
+    `var doc=document.documentElement||{};` +
+    `var client=doc.clientHeight||0;` +
+    `var full=Math.max(doc.scrollHeight||0,(document.body&&document.body.scrollHeight)||0);` +
+    `if(full>client+1){` +
+    `if(growClient&&client>growClient){` +
+    `if((full-growFull)>=(client-growClient)-24){coupleStrikes+=1;}else{coupleStrikes=0;}` +
+    `if(coupleStrikes>=2)viewportCoupled=true;` +
+    `}` +
+    `growClient=client;growFull=full;` +
+    `contentFloor=full;` +
+    `if(viewportCoupled)return client;` +
+    `var need=client+Math.min(full-client,400);return Math.max(base,need);` +
+    `}` +
+    `growClient=0;growFull=0;coupleStrikes=0;` +
+    `var target=Math.max(base,contentFloor);` +
+    `if(target<client-24)return target;` +
+    `return Math.max(target,client);` +
+    `}`
+  )
+}
+
 function resizeTailScript(messages: HtmlArtifactBridgeMessages): string {
   return (
     `(function(){` +
@@ -171,28 +207,14 @@ function resizeTailScript(messages: HtmlArtifactBridgeMessages): string {
     `}` +
     // 平铺硬保证:iframe 高度必须 ≥ 浏览器认定的可滚总高(doc.scrollHeight,含一切
     // padding/margin/溢出),否则内容仍可滚。子元素测量做下限,scrollHeight 补齐真实溢出;
-    // 差值 >400px 视为 vh 类反馈回路(内容随 iframe 增高而增高),忽略以防无限增长。
-    // contentFloor=真溢出时刻的 scrollHeight,是内容高的**真值**(scrollHeight>视口时不再被视口
-    // 托底)。收缩不允许低于它——否则「增长信 scrollHeight/收缩信子元素测量」两个来源一旦
-    // 分歧就互搏,iframe 高度在两值间永久振荡、把制品下方正文抖上抖下(真机踩坑)。
-    // DOM 变更时地板归零,内容真变矮时先缩一步、若过头由溢出分支纠正并重建地板,一轮收敛。
-    `var contentFloor=0;` +
-    `function measureFullHeight(base){` +
-    `var doc=document.documentElement||{};` +
-    `var client=doc.clientHeight||0;` +
-    `var full=Math.max(doc.scrollHeight||0,(document.body&&document.body.scrollHeight)||0);` +
-    `if(full>client+1){contentFloor=full;var need=client+Math.min(full-client,400);return Math.max(base,need);}` +
-    `var target=Math.max(base,contentFloor);` +
-    `if(target<client-24)return target;` +
-    `return Math.max(target,client);` +
-    `}` +
-    `function reportHeight(){` +
+    // 守卫细节见 heightGuardScript 注释(振荡地板+vh 反馈回路冻结)。
+    `${heightGuardScript()}function reportHeight(){` +
     `var size=measureContentSize(document.body);` +
     `var height=measureFullHeight(size.height);` +
     `window.parent.postMessage({type:${jsString(messages.resize)},height:height,width:size.width,naturalHeight:height,naturalWidth:size.width,rendered:true},'*');` +
     `}` +
     `if(window.ResizeObserver){new ResizeObserver(reportHeight).observe(document.body);}` +
-    `if(window.MutationObserver&&document.body){new MutationObserver(function(){contentFloor=0;}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
+    `if(window.MutationObserver&&document.body){new MutationObserver(function(){resetHeightGuards();}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
     `window.addEventListener('resize',reportHeight);` +
     `window.addEventListener('load',function(){setTimeout(reportHeight,120);setTimeout(reportHeight,420);});` +
     `setTimeout(reportHeight,40);` +
@@ -374,21 +396,10 @@ function liveRenderTailScript(rootId: string, messages: HtmlArtifactBridgeMessag
     `return{width:Math.max(1,Math.ceil(width)),height:Math.max(1,Math.ceil(height))};` +
     `}` +
     `var hasRendered=false;` +
-    // 平铺硬保证(与静态文档路径同款):高度取 max(子元素测量, doc.scrollHeight),
-    // 差值 >400px 视为 vh 反馈回路忽略,保证 iframe 内部零可滚。
-    // contentFloor 同静态路径:真溢出时 scrollHeight=内容真值,收缩不得低于它,杜绝
-    // 「增长信 scrollHeight/收缩信子元素测量」两源分歧互搏振荡;DOM 变更/重渲染时归零。
-    `var contentFloor=0;` +
-    `function measureFullHeight(base){` +
-    `var doc=document.documentElement||{};` +
-    `var client=doc.clientHeight||0;` +
-    `var full=Math.max(doc.scrollHeight||0,(document.body&&document.body.scrollHeight)||0);` +
-    `if(full>client+1){contentFloor=full;var need=client+Math.min(full-client,400);return Math.max(base,need);}` +
-    `var target=Math.max(base,contentFloor);` +
-    `if(target<client-24)return target;` +
-    `return Math.max(target,client);` +
-    `}` +
-    `function reportHeight(){` +
+    // 平铺硬保证(与静态文档路径同一份守卫):高度取 max(子元素测量, doc.scrollHeight),
+    // 保证 iframe 内部零可滚;振荡地板+vh 反馈回路冻结见 heightGuardScript 注释,
+    // DOM 变更/重渲染时守卫归零。
+    `${heightGuardScript()}function reportHeight(){` +
     `if(!hasRendered)return;` +
     `var size=measureContentSize(root||document.body);` +
     `var height=measureFullHeight(size.height);` +
@@ -416,11 +427,11 @@ function liveRenderTailScript(rootId: string, messages: HtmlArtifactBridgeMessag
     `window.addEventListener('message',function(event){` +
     `if(event.source!==window.parent)return;` +
     `var data=event.data||{};` +
-    `if(data.type===${jsString(messages.render)}){contentFloor=0;render(data.html,data.patches);hasRendered=true;reportSoon();}` +
+    `if(data.type===${jsString(messages.render)}){resetHeightGuards();render(data.html,data.patches);hasRendered=true;reportSoon();}` +
     `if(data.type===${jsString(messages.patch)}){queuePatches(data.patches||(data.patch?[data.patch]:[]));}` +
     `});` +
     `if(window.ResizeObserver){var resizeObserver=new ResizeObserver(reportHeight);if(root)resizeObserver.observe(root);if(document.body)resizeObserver.observe(document.body);}` +
-    `if(window.MutationObserver&&document.body){new MutationObserver(function(){contentFloor=0;reportSoon();}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
+    `if(window.MutationObserver&&document.body){new MutationObserver(function(){resetHeightGuards();reportSoon();}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
     `window.addEventListener('resize',reportHeight);` +
     `window.addEventListener('load',function(){setTimeout(reportHeight,80);setTimeout(reportHeight,360);});` +
     `setTimeout(reportHeight,40);` +
