@@ -87,7 +87,9 @@ import {
 
 const iframe = document.createElement('iframe')
 iframe.setAttribute('sandbox', 'allow-scripts')
-iframe.srcdoc = buildHtmlArtifactShellDocument()
+iframe.srcdoc = buildHtmlArtifactShellDocument({
+  maxReportedHeight: 1200,
+})
 
 const safeUrl = normalizeHtmlArtifactExternalUrl(candidateUrl)
 const fit = resolveHtmlArtifactFrameFit({
@@ -99,6 +101,8 @@ const fit = resolveHtmlArtifactFrameFit({
 ```
 
 The host owns the iframe sandbox attribute and must validate both `event.source` and every message payload. The runtime's default link policy accepts only explicit HTTP and HTTPS URLs.
+
+Height negotiation is one-way: the runtime reports a deduplicated absolute target and the host applies that value without adding padding. Reports are capped at `maxReportedHeight` (default `1200`); taller or viewport-coupled content remains scrollable inside the sandbox instead of growing the surrounding page forever.
 
 ## Design boundaries
 

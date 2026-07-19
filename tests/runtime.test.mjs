@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
+import { createHtmlArtifactHeightController } from '../dist/height-controller.js'
 import {
   buildHtmlArtifactShellDocument,
+  DEFAULT_HTML_ARTIFACT_MAX_REPORTED_HEIGHT,
   HTML_ARTIFACT_WHEEL_MESSAGE_TYPE,
   inferHtmlArtifactContentKind,
   normalizeHtmlArtifactExternalUrl,
@@ -52,6 +54,7 @@ describe('HTML artifact runtime', () => {
         render: 'demo-render',
         generic: 'demo-message',
       },
+      maxReportedHeight: 720,
       rootId: 'demo-root',
     })
 
@@ -60,6 +63,51 @@ describe('HTML artifact runtime', () => {
     assert.match(shell, /demo-message/)
     assert.match(shell, /window\.artifactBridge/)
     assert.match(shell, new RegExp(HTML_ARTIFACT_WHEEL_MESSAGE_TYPE))
+    assert.match(shell, /\)\(720\);function invalidateHeightMeasurement/)
+    assert.match(shell, /pendingPatches=\[\];invalidateHeightMeasurement\(\);applyPatches\(patches\)/)
+    assert.match(shell, /shouldPublishMeasuredSize/)
     assert.doesNotMatch(shell, /widgetBridge|show_widget/)
+  })
+
+  test('uses a finite default height cap for viewport-coupled artifacts', () => {
+    const shell = buildHtmlArtifactShellDocument()
+
+    assert.equal(DEFAULT_HTML_ARTIFACT_MAX_REPORTED_HEIGHT, 1200)
+    assert.match(shell, /\)\(1200\);function invalidateHeightMeasurement/)
+  })
+
+  test('settles shrink, feedback, deduplication, and hard caps in one controller', () => {
+    const controller = createHtmlArtifactHeightController(720)
+
+    assert.equal(
+      controller.resolve({ baseHeight: 2000, clientHeight: 240, scrollHeight: 2000 }),
+      720
+    )
+
+    controller.invalidate()
+    assert.equal(
+      controller.resolve({ baseHeight: 352, clientHeight: 376, scrollHeight: 352 }),
+      352
+    )
+    assert.equal(controller.shouldPublish({ height: 352, width: 560 }), true)
+    assert.equal(controller.shouldPublish({ height: 352, width: 560 }), false)
+
+    controller.invalidate()
+    assert.equal(
+      controller.resolve({ baseHeight: 300, clientHeight: 240, scrollHeight: 300 }),
+      300
+    )
+    assert.equal(
+      controller.resolve({ baseHeight: 360, clientHeight: 300, scrollHeight: 360 }),
+      360
+    )
+    assert.equal(
+      controller.resolve({ baseHeight: 420, clientHeight: 360, scrollHeight: 420 }),
+      360
+    )
+    assert.equal(
+      controller.resolve({ baseHeight: 480, clientHeight: 420, scrollHeight: 480 }),
+      360
+    )
   })
 })

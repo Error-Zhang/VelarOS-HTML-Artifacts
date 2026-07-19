@@ -16,10 +16,14 @@ export interface HtmlArtifactDocumentOptions {
     bodyStyle?: string;
     bridgeMessages?: Partial<HtmlArtifactBridgeMessages>;
     initialPatches?: readonly HtmlArtifactRenderPatch[];
+    /** Maximum height the iframe runtime may request from its host before using internal scrolling. */
+    maxReportedHeight?: number;
 }
 export interface HtmlArtifactShellDocumentOptions extends HtmlArtifactDocumentOptions {
     rootId?: string;
 }
+/** Safe default that prevents viewport-relative artifact CSS from growing an iframe forever. */
+export declare const DEFAULT_HTML_ARTIFACT_MAX_REPORTED_HEIGHT = 1200;
 /** The iframe asks its host to continue a wheel gesture when the document itself cannot scroll. */
 export declare const HTML_ARTIFACT_WHEEL_MESSAGE_TYPE = "velaros:html-artifact-wheel";
 export declare function normalizeHtmlArtifactSource(content: string): string;
