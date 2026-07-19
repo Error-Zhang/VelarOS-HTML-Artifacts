@@ -19,7 +19,7 @@ function normalizeProtocol(protocol: string): string {
 }
 
 function resolveAllowedProtocols(
-  protocols: LooseOptional<readonly string[]>
+  protocols: readonly string[] | null | undefined
 ): Set<string> {
   const values = protocols?.length ? protocols : DEFAULT_ALLOWED_EXTERNAL_URL_PROTOCOLS
   return new Set(values.map(normalizeProtocol).filter(Boolean))
@@ -28,7 +28,7 @@ function resolveAllowedProtocols(
 export function normalizeHtmlArtifactExternalUrl(
   value: unknown,
   options: NormalizeHtmlArtifactExternalUrlOptions = {}
-): Nullable<string> {
+): string | null {
   if (typeof value !== 'string') return null
 
   const trimmed = value.trim()

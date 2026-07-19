@@ -1,4 +1,4 @@
-import type { HtmlArtifactRenderPatch } from './protocol'
+import type { HtmlArtifactRenderPatch } from './protocol.js'
 
 export type HtmlArtifactContentKind = 'html' | 'svg'
 
@@ -27,8 +27,8 @@ export interface HtmlArtifactShellDocumentOptions extends HtmlArtifactDocumentOp
 
 const DEFAULT_ROOT_ID = 'velaros-html-artifact-root'
 
-/** 平铺 iframe 的 wheel 转发消息类型:内部无可滚时把滚轮交还宿主页面代滚(单源,两端共用)。 */
-export const WIDGET_WHEEL_MESSAGE_TYPE = 'velaros:widget-wheel'
+/** The iframe asks its host to continue a wheel gesture when the document itself cannot scroll. */
+export const HTML_ARTIFACT_WHEEL_MESSAGE_TYPE = 'velaros:html-artifact-wheel'
 const DEFAULT_BRIDGE_MESSAGES: HtmlArtifactBridgeMessages = {
   render: 'velaros-html-artifact-render',
   patch: 'velaros-html-artifact-patch',
@@ -39,10 +39,9 @@ const DEFAULT_BRIDGE_MESSAGES: HtmlArtifactBridgeMessages = {
   error: 'velaros-html-artifact-error',
 }
 
-// 模型习惯性外包裹(<![CDATA[ ]]> / markdown 代码围栏)在 HTML 里不是透明的:CDATA 头是
-// bogus comment,会一路吞到下一个 '>'——<style> 开标签被吃掉,整段 CSS 变成正文文本
-// (真机踩坑:show_widget 的 widget_code 被 CDATA 包裹,CSS 全文渲染成文字)。渲染前统一
-// 宽容剥除,widget 与 artifact 协议两条链路共用这一个入口;流式半成品允许尾标记尚未到达。
+// CDATA and Markdown fences are common wrappers in model output, but CDATA is not transparent in
+// HTML parsing. Normalize only wrappers around the entire source before rendering; partial streams
+// may legitimately be missing their closing wrapper.
 const SOURCE_FENCE_OPEN_PATTERN = /^```[\w-]*[ \t]*\r?\n/
 const SOURCE_FENCE_CLOSE_PATTERN = /\r?\n```[ \t]*$/
 const SOURCE_CDATA_OPEN = '<![CDATA['
@@ -131,7 +130,7 @@ function bridgeHeadScript(messages: HtmlArtifactBridgeMessages): string {
     `};` +
     `window.sendPrompt=function(text){window.parent.postMessage({type:${jsString(messages.sendPrompt)},prompt:String(text||'')},'*')};` +
     `window.openLink=function(url){window.parent.postMessage({type:${jsString(messages.openLink)},url:String(url||'')},'*')};` +
-    `window.widgetBridge={send:function(payload){window.parent.postMessage({type:${jsString(messages.generic)},payload:payload},'*')}};` +
+    `window.artifactBridge={send:function(payload){window.parent.postMessage({type:${jsString(messages.generic)},payload:payload},'*')}};` +
     `window.addEventListener('error',function(event){window.__htmlArtifactReportRuntimeError(event&&event.error||event&&event.message||'Artifact error',{phase:'window'});});` +
     `window.addEventListener('unhandledrejection',function(event){window.__htmlArtifactReportRuntimeError(event&&event.reason||'Unhandled artifact promise rejection',{phase:'script'});});` +
     // 平铺后 iframe 根文档无可滚区域,wheel 事件却被 iframe 文档吞掉(跨文档不冒泡到宿主),
@@ -141,7 +140,7 @@ function bridgeHeadScript(messages: HtmlArtifactBridgeMessages): string {
     `var doc=document.documentElement||{};` +
     `if(window.parent!==window&&(doc.scrollHeight||0)<=(doc.clientHeight||0)+1&&(doc.scrollWidth||0)<=(doc.clientWidth||0)+1){` +
     `if(event.cancelable!==false)event.preventDefault();` +
-    `window.parent.postMessage({type:${jsString(WIDGET_WHEEL_MESSAGE_TYPE)},deltaY:Number(event.deltaY)||0,deltaX:Number(event.deltaX)||0},'*');` +
+    `window.parent.postMessage({type:${jsString(HTML_ARTIFACT_WHEEL_MESSAGE_TYPE)},deltaY:Number(event.deltaY)||0,deltaX:Number(event.deltaX)||0},'*');` +
     `}` +
     `},{capture:true,passive:false});`
   )

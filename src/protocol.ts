@@ -85,8 +85,8 @@ export interface HtmlArtifactProtocolStreamState {
   enabled: boolean
   mode: HtmlArtifactProtocolMode
   buffer: string
-  activeArtifact: Nullable<HtmlArtifactDescriptor>
-  activeAction: Nullable<HtmlArtifactActionState>
+  activeArtifact: HtmlArtifactDescriptor | null
+  activeAction: HtmlArtifactActionState | null
   artifactsById: Record<string, HtmlArtifactSnapshot>
   anonymousArtifactCounter: number
   limits: Required<HtmlArtifactProtocolLimits>
@@ -155,7 +155,7 @@ export function createHtmlArtifactProtocolStreamState(
   }
 }
 
-function normalizeLimit(value: LooseOptional<number>, fallback: number): number {
+function normalizeLimit(value: number | null | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.round(value)
     : fallback
@@ -194,7 +194,7 @@ function clampArtifactTitle(title: string): string {
   return normalizedTitle.slice(0, MAX_ARTIFACT_TITLE_LENGTH) || 'HTML Live Preview'
 }
 
-function normalizeExplicitArtifactId(id: string): Nullable<string> {
+function normalizeExplicitArtifactId(id: string): string | null {
   const normalizedId = id
     .trim()
     .replace(/[^\w.-]+/g, '-')
@@ -204,7 +204,7 @@ function normalizeExplicitArtifactId(id: string): Nullable<string> {
   return normalizedId || null
 }
 
-function parsePositiveHeight(value: Nullable<string>): number | undefined {
+function parsePositiveHeight(value: string | null): number | undefined {
   if (!value) return undefined
 
   const numericValue = +value
@@ -213,21 +213,21 @@ function parsePositiveHeight(value: Nullable<string>): number | undefined {
   return Math.max(160, Math.min(Math.round(numericValue), 1200))
 }
 
-function readArtifactProtocolVersion(value: LooseOptional<string>): Nullable<string> {
+function readArtifactProtocolVersion(value: string | null | undefined): string | null {
   if (!value) return HTML_ARTIFACT_PROTOCOL_VERSION
 
   const normalized = value.trim()
   return normalized === HTML_ARTIFACT_PROTOCOL_VERSION ? normalized : null
 }
 
-function parseTag(tagText: string, expectedName: string): Nullable<ParsedTag> {
+function parseTag(tagText: string, expectedName: string): ParsedTag | null {
   const openMatch = tagText.match(/^<([A-Za-z][\w:-]*)([\s\S]*)>$/)
   if (!openMatch || openMatch[1] !== expectedName) return null
 
   const attributes: Record<string, string> = {}
   const attributeText = openMatch[2] ?? ''
   const attributePattern = /([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g
-  let match: Nullable<RegExpExecArray>
+  let match: RegExpExecArray | null
 
   while ((match = attributePattern.exec(attributeText))) {
     const key = match[1]
@@ -259,7 +259,7 @@ function findPartialProtocolStart(
 }
 
 function findTagEnd(text: string, openIndex: number): number {
-  let quote: Nullable<string> = null
+  let quote: string | null = null
 
   for (let index = openIndex + 1; index < text.length; index += 1) {
     const char = text[index]
@@ -352,7 +352,7 @@ function updateArtifactHtml(
 
 function readArtifactFromTag(
   tag: ParsedTag
-): Nullable<HtmlArtifactDescriptor> {
+): HtmlArtifactDescriptor | null {
   const rawId = tag.attributes.id ?? tag.attributes.artifactId
   if (typeof rawId !== 'string') return null
 
@@ -376,7 +376,7 @@ function readActionType(tag: ParsedTag): HtmlArtifactActionType {
   return 'replace'
 }
 
-function normalizePatchMetadata(value: LooseOptional<string>): string | undefined {
+function normalizePatchMetadata(value: string | null | undefined): string | undefined {
   if (typeof value !== 'string') return undefined
 
   const normalized = value.trim().slice(0, MAX_PATCH_METADATA_LENGTH)
@@ -555,7 +555,7 @@ function findSafeHtmlEmitEnds(html: string, startIndex: number): number[] {
 
 function findSafeCssEmitEnds(css: string, startIndex: number): number[] {
   const ends: number[] = []
-  let quote: Nullable<string> = null
+  let quote: string | null = null
   let escaped = false
   let inComment = false
   let braceDepth = 0
@@ -658,7 +658,7 @@ function decodeUtf8Bytes(bytes: number[]): string {
   return output
 }
 
-function decodeBase64Utf8(value: string): Nullable<string> {
+function decodeBase64Utf8(value: string): string | null {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
   const normalized = value.replace(/\s+/g, '')
   const bytes: number[] = []

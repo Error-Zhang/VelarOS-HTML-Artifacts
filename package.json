@@ -1,7 +1,25 @@
 {
   "name": "@velaros/html-artifacts",
   "version": "0.1.0",
-  "description": "Shared stream protocol and iframe document helpers for VelarOS HTML artifacts.",
+  "description": "A streaming HTML artifact protocol and sandboxed iframe runtime extracted from VelarOS.",
+  "keywords": [
+    "ai",
+    "artifact",
+    "html",
+    "iframe",
+    "streaming"
+  ],
+  "license": "MIT",
+  "author": "Error-Zhang",
+  "homepage": "https://github.com/Error-Zhang/VelarOS-HTML-Artifacts#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Error-Zhang/VelarOS-HTML-Artifacts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Error-Zhang/VelarOS-HTML-Artifacts/issues"
+  },
+  "sideEffects": false,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,19 +27,42 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
     }
   },
   "files": [
     "dist",
-    "README.md"
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md"
   ],
   "scripts": {
-    "clean": "rm -rf dist",
-    "build": "bun run clean && tsc -p tsconfig.build.json && node ../../scripts/build/fix-esm-extensions.mjs dist && node ../../scripts/build/copy-velaros-globals-to-dist.mjs",
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "prepack": "bun run build"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "demo": "npm run build && vite demo",
+    "demo:build": "npm run build && vite build demo --outDir ../demo-dist --emptyOutDir",
+    "check": "npm run typecheck && npm test && npm run demo:build && npm pack --dry-run",
+    "prepare": "npm run build",
+    "prepack": "npm run build"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vite": "^7.3.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
