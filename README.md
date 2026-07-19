@@ -3,67 +3,110 @@
 [![CI](https://github.com/Error-Zhang/VelarOS-HTML-Artifacts/actions/workflows/ci.yml/badge.svg)](https://github.com/Error-Zhang/VelarOS-HTML-Artifacts/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-111111.svg)](./LICENSE)
 
-A dependency-light TypeScript library for turning incremental model output into live, sandboxed HTML artifacts.
+Turn an incremental model text stream into a live, sandboxed HTML interface.
 
-It contains two deliberately separate layers:
+VelarOS HTML Artifacts is a dependency-free browser runtime with a small TypeScript API. It owns the protocol parser, iframe lifecycle, patch transport, bounded height negotiation, link validation, and cleanup so an application does not have to assemble those pieces itself.
 
-- A streaming protocol parser that emits renderer-neutral artifact and patch events.
-- A sandbox runtime that builds iframe documents, applies HTML/CSS/JavaScript patches, reports runtime failures, measures natural content size, and hands host actions back through `postMessage`.
-
-The project was designed and built by [Error-Zhang](https://github.com/Error-Zhang) as part of VelarOS Desktop, then separated behind a public, host-agnostic boundary. The original commit history is preserved.
-
-[中文文档](./README.zh-CN.md)
-
-## Why this exists
-
-Streaming HTML is not the same as assigning partial text to `innerHTML`. A model can stop in the middle of a tag, CSS rule, script, or UTF-8 payload. At the same time, the host must keep untrusted output isolated, avoid transcript layout oscillation, and preserve a useful error trail.
-
-VelarOS HTML Artifacts handles those seams without depending on React, Electron, an agent loop, or a particular model provider.
-
-```mermaid
-flowchart LR
-  M["Incremental model output"] --> P["Protocol parser"]
-  P --> E["Artifact and patch events"]
-  E --> H["Host adapter"]
-  H --> I["Sandboxed iframe runtime"]
-  I --> R["Resize, error, link, and prompt events"]
-  R --> H
-```
+[中文文档](./README.zh-CN.md) · [Live demo](https://error-zhang.github.io/VelarOS-HTML-Artifacts/)
 
 ## Install
 
-Until the first npm publication, pin the GitHub repository or a release commit:
+The first registry release is being prepared. Until `@velaros/html-artifacts` is available on npm, install the tagged GitHub release:
 
 ```bash
-npm install github:Error-Zhang/VelarOS-HTML-Artifacts
+npm install Error-Zhang/VelarOS-HTML-Artifacts#v0.1.0
 ```
 
-The compiled `dist/` directory is versioned so Git dependencies also work in package managers that do not run dependency `prepare` scripts.
+The repository versions `dist/`, so npm, pnpm, Bun, and Yarn can consume the Git dependency without running a build script.
 
-The npm package name is reserved in the manifest as `@velaros/html-artifacts`.
-
-## Protocol parser
+## Quick start
 
 ```ts
-import {
-  applyHtmlArtifactProtocolChunk,
-  createHtmlArtifactProtocolStreamState,
-  finalizeHtmlArtifactProtocol,
-} from '@velaros/html-artifacts/protocol'
+import { mountHtmlArtifact } from '@velaros/html-artifacts'
 
-const state = createHtmlArtifactProtocolStreamState({ enabled: true })
+const container = document.querySelector<HTMLElement>('#preview')
+if (!container) throw new Error('Missing #preview')
 
-for await (const chunk of modelTextStream) {
-  const events = applyHtmlArtifactProtocolChunk(state, chunk)
-  for (const event of events) renderEvent(event)
-}
+const artifact = mountHtmlArtifact(container, {
+  maxHeight: 720,
+  onPrompt: (prompt) => sendToModel(prompt),
+  onLink: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
+  onError: (error) => console.error(error.phase, error.message),
+})
 
-for (const event of finalizeHtmlArtifactProtocol(state)) {
-  renderEvent(event)
-}
+await artifact.consume(modelTextStream)
+
+// When the surrounding view is destroyed:
+artifact.dispose()
 ```
 
-The v1 wire format is intentionally small:
+`modelTextStream` may be an `AsyncIterable<string>` from any model provider. The library does not depend on React, Electron, an agent loop, or a particular API client.
+
+The mount call creates one `sandbox="allow-scripts"` iframe inside the target element. Generated code stays inside that iframe. Capabilities such as opening a link or sending a new prompt are explicit callbacks owned by the host.
+
+## Manual streaming
+
+Use `consume()` for the common case. Use `write()` and `finish()` when your transport already has its own stream loop:
+
+```ts
+const artifact = mountHtmlArtifact(container, { maxHeight: 720 })
+
+for await (const chunk of modelTextStream) {
+  artifact.write(chunk)
+}
+artifact.finish()
+
+// Reuse the same iframe for a later response.
+artifact.reset()
+
+// Remove the iframe and every host listener.
+artifact.dispose()
+```
+
+Chunks may end in the middle of a tag, CSS rule, script, or Base64 payload. Only safe protocol boundaries are emitted to the iframe runtime.
+
+## Host callbacks
+
+```ts
+const artifact = mountHtmlArtifact(container, {
+  onMarkdown(text) {
+    appendToTranscript(text)
+  },
+  onPrompt(prompt) {
+    sendToModel(prompt)
+  },
+  onLink(url) {
+    openTrustedUrl(url)
+  },
+  onMessage(payload) {
+    handleArtifactMessage(payload)
+  },
+  onEvent(event) {
+    recordProtocolEvent(event)
+  },
+  onError(error) {
+    reportArtifactError(error)
+  },
+})
+```
+
+HTTP and HTTPS are the only link protocols allowed by default. Invalid or active URLs are reported through `onError` and never reach `onLink`.
+
+## Stable sizing
+
+```ts
+const artifact = mountHtmlArtifact(container, {
+  initialHeight: 360,
+  minHeight: 1,
+  maxHeight: 720,
+})
+```
+
+The iframe runtime publishes a deduplicated absolute content height. The host applies that exact value without adding padding or feeding viewport growth back into the measurement. `maxHeight` is enforced in both the iframe runtime and the browser host; taller or viewport-coupled documents scroll inside the sandbox instead of growing the outer page forever.
+
+## Artifact protocol
+
+The v1 wire format is deliberately small:
 
 ```html
 <artifact version="1" id="profile-card" title="Profile card">
@@ -74,47 +117,58 @@ The v1 wire format is intentionally small:
 </artifact>
 ```
 
-The parser emits HTML only at closed-element boundaries, CSS only at complete rule boundaries, and scripts only after their patch closes. Use `encoding="base64"` when a payload itself contains protocol closing tags.
+Use `encoding="base64"` when a patch payload itself contains protocol closing tags.
 
-## Sandboxed runtime
+## Advanced APIs
+
+Most applications should only use `mountHtmlArtifact()` from the package root. Two lower-level entry points are available for custom hosts:
 
 ```ts
+// Renderer-neutral incremental parser.
+import {
+  applyHtmlArtifactProtocolChunk,
+  createHtmlArtifactProtocolStreamState,
+  finalizeHtmlArtifactProtocol,
+} from '@velaros/html-artifacts/protocol'
+
+// iframe document, sizing, and URL primitives.
 import {
   buildHtmlArtifactShellDocument,
   normalizeHtmlArtifactExternalUrl,
   resolveHtmlArtifactFrameFit,
-} from '@velaros/html-artifacts/runtime'
-
-const iframe = document.createElement('iframe')
-iframe.setAttribute('sandbox', 'allow-scripts')
-iframe.srcdoc = buildHtmlArtifactShellDocument({
-  maxReportedHeight: 1200,
-})
-
-const safeUrl = normalizeHtmlArtifactExternalUrl(candidateUrl)
-const fit = resolveHtmlArtifactFrameFit({
-  fallbackHeight: 360,
-  maxViewportWidth: 720,
-  naturalHeight: 900,
-  naturalWidth: 1200,
-})
+} from '@velaros/html-artifacts/sandbox'
 ```
 
-The host owns the iframe sandbox attribute and must validate both `event.source` and every message payload. The runtime's default link policy accepts only explicit HTTP and HTTPS URLs.
+`@velaros/html-artifacts/runtime` remains as a compatibility alias for `./sandbox`.
 
-Height negotiation is one-way: the runtime reports a deduplicated absolute target and the host applies that value without adding padding. Reports are capped at `maxReportedHeight` (default `1200`); taller or viewport-coupled content remains scrollable inside the sandbox instead of growing the surrounding page forever.
+## API
 
-## Design boundaries
+### `mountHtmlArtifact(target, options?)`
 
-This repository owns reusable mechanics, not product policy. It intentionally excludes:
+Mounts a managed artifact iframe and returns an `HtmlArtifactController`.
 
-- model system prompts and tool-selection instructions;
-- chat state, persistence, retry policy, or agent orchestration;
-- Electron IPC and Desktop-specific events;
-- theme tokens, toolbars, fullscreen layers, or other product UI;
-- Widget, memory, permission, or VelarOS Kernel implementation details.
+Important options:
 
-Hosts can provide their own bridge message names, CSS, root id, sandbox policy, and UI adapter.
+- `initialHeight`, `minHeight`, `maxHeight`: bounded iframe sizing.
+- `sandbox`: iframe sandbox tokens; defaults to `allow-scripts`.
+- `designCss`, `rootId`, `title`, `className`: host presentation hooks.
+- `protocolLimits`: resource limits for untrusted or unexpectedly large streams.
+- `onMarkdown`, `onPrompt`, `onLink`, `onMessage`, `onEvent`, `onError`: host callbacks.
+
+Controller methods:
+
+- `consume(stream)`: consume an iterable of text chunks and return the latest protocol snapshot.
+- `write(chunk)`: parse and render one chunk.
+- `finish()`: flush an interrupted final chunk.
+- `getSnapshot(id?)`: read the latest parser snapshot.
+- `reset()`: clear parser and iframe content while keeping the mount alive.
+- `dispose()`: remove the iframe and all listeners.
+
+## Design boundary
+
+This repository owns reusable streaming and sandbox mechanics. It intentionally does not include model prompts, chat state, agent orchestration, Electron IPC, product UI, permissions, Widget, memory, or VelarOS Kernel internals.
+
+The public repository is the source of truth. Generic fixes land here first; products consume an exact released version and keep only their product-specific adapter.
 
 ## Development
 
@@ -124,11 +178,7 @@ npm run check
 npm run demo
 ```
 
-`npm run check` runs type checking, the Node test suite, a production demo build, and a package dry run.
-
-## Release model
-
-The public repository is the source of truth. VelarOS Desktop consumes an exact released commit or package version; Desktop-specific adapters remain private. Generic fixes land here first, then flow downstream through a dependency update.
+`npm run check` runs TypeScript validation, Node tests, a production demo build, and a package dry run.
 
 ## Security
 
