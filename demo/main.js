@@ -1,19 +1,4 @@
-import {
-  applyHtmlArtifactProtocolChunk,
-  buildHtmlArtifactShellDocument,
-  createHtmlArtifactProtocolStreamState,
-  HTML_ARTIFACT_WHEEL_MESSAGE_TYPE,
-} from '../dist/index.js'
-
-const bridgeMessages = {
-  render: 'demo-artifact-render',
-  patch: 'demo-artifact-patch',
-  resize: 'demo-artifact-resize',
-  sendPrompt: 'demo-artifact-prompt',
-  openLink: 'demo-artifact-link',
-  generic: 'demo-artifact-message',
-  error: 'demo-artifact-error',
-}
+import { mountHtmlArtifact } from '../dist/index.js'
 
 const defaultSample = `<artifact version="1" id="flight-card" title="Flight card">
 <patch type="replace"><main id="artifact-root"></main></patch>
@@ -38,64 +23,32 @@ const frameHost = document.querySelector('#frame-host')
 const log = document.querySelector('#protocol-log')
 const runButton = document.querySelector('#run')
 const status = document.querySelector('#status')
-let iframe = null
 let generation = 0
 
 function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
 
-function post(payload) {
-  iframe?.contentWindow?.postMessage(payload, '*')
-}
-
-function makeFrame() {
-  frameHost.replaceChildren()
-  iframe = document.createElement('iframe')
-  iframe.title = 'Streaming HTML artifact preview'
-  iframe.setAttribute('sandbox', 'allow-scripts')
-  iframe.srcdoc = buildHtmlArtifactShellDocument({
-    bridgeMessages,
-    designCss: 'html{background:transparent}body{padding:4px}',
-    maxReportedHeight: 720,
-    rootId: 'demo-artifact-root',
-  })
-  frameHost.append(iframe)
-  return new Promise((resolve) => iframe.addEventListener('load', resolve, { once: true }))
-}
-
-window.addEventListener('message', (event) => {
-  if (!iframe || event.source !== iframe.contentWindow || !event.data) return
-
-  if (event.data.type === bridgeMessages.resize && event.data.rendered) {
-    const reportedHeight = Number(event.data.naturalHeight ?? event.data.height)
-    if (Number.isFinite(reportedHeight) && reportedHeight > 0) {
-      // The runtime already includes document padding in its measured height.
-      // Re-adding it here creates a resize feedback loop between host and iframe.
-      const nextHeight = Math.max(240, Math.ceil(reportedHeight))
-      if (Math.round(iframe.getBoundingClientRect().height) !== nextHeight) {
-        iframe.style.height = `${nextHeight}px`
-      }
+const artifact = mountHtmlArtifact(frameHost, {
+  title: 'Streaming HTML artifact preview',
+  initialHeight: 240,
+  maxHeight: 720,
+  rootId: 'demo-artifact-root',
+  designCss: 'html{background:transparent}body{padding:4px}',
+  onEvent(event) {
+    if (event.type === 'artifact-close') {
+      status.textContent = 'Complete — interaction stays inside the sandbox'
     }
-  } else if (event.data.type === bridgeMessages.error) {
-    status.textContent = `Runtime report: ${event.data.message}`
-  } else if (event.data.type === HTML_ARTIFACT_WHEEL_MESSAGE_TYPE) {
-    window.scrollBy({ top: Number(event.data.deltaY) || 0 })
-  }
+  },
+  onError(error) {
+    status.textContent = `${error.phase} report: ${error.message}`
+  },
+  onLink(url) {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  },
 })
 
-async function replay() {
-  generation += 1
-  const activeGeneration = generation
-  runButton.disabled = true
-  status.textContent = 'Preparing sandbox…'
-  log.textContent = ''
-  await makeFrame()
-  if (activeGeneration !== generation) return
-
-  const state = createHtmlArtifactProtocolStreamState({ enabled: true })
-  status.textContent = 'Streaming model output…'
-
+async function* streamSample(activeGeneration) {
   for (let offset = 0; offset < sample.length; ) {
     if (activeGeneration !== generation) return
     const width = 4 + ((offset * 7) % 17)
@@ -103,20 +56,29 @@ async function replay() {
     offset += width
     log.textContent += chunk
     log.scrollTop = log.scrollHeight
-
-    for (const event of applyHtmlArtifactProtocolChunk(state, chunk)) {
-      if (event.type === 'artifact-update') {
-        post({ type: bridgeMessages.render, html: event.html, patches: [] })
-      } else if (event.type === 'artifact-patch') {
-        post({ type: bridgeMessages.patch, patches: [event.patch] })
-      } else if (event.type === 'artifact-close') {
-        status.textContent = 'Complete — interaction stays inside the sandbox'
-      }
-    }
+    yield chunk
     await wait(16)
   }
+}
 
-  runButton.disabled = false
+async function replay() {
+  generation += 1
+  const activeGeneration = generation
+  runButton.disabled = true
+  status.textContent = 'Preparing sandbox…'
+  log.textContent = ''
+
+  try {
+    await artifact.ready
+    if (activeGeneration !== generation) return
+    artifact.reset()
+    status.textContent = 'Streaming model output…'
+    await artifact.consume(streamSample(activeGeneration))
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : 'Unable to replay stream'
+  } finally {
+    if (activeGeneration === generation) runButton.disabled = false
+  }
 }
 
 runButton.addEventListener('click', replay)

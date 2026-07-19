@@ -1,91 +1,185 @@
 # VelarOS HTML Artifacts
 
-一个低依赖的 TypeScript 开源库，用于把模型的增量文本输出转换成实时、隔离的 HTML Artifact。
+把模型的增量文本流直接变成实时、隔离的 HTML 界面。
 
-它包含两个明确分离的层次：
+VelarOS HTML Artifacts 是一个零运行时依赖的浏览器库。它统一负责协议解析、iframe 生命周期、补丁传输、受限高度协商、链接校验和资源清理，接入方不再需要自己拼装 `postMessage` 和流式渲染逻辑。
 
-- 流式协议解析器：把不完整的模型输出转换为与渲染框架无关的 Artifact/Patch 事件。
-- 沙箱运行时：构建 iframe 文档、应用 HTML/CSS/JavaScript 增量补丁、上报错误与自然尺寸，并通过 `postMessage` 把宿主动作交还给外层应用。
-
-本项目由 [Error-Zhang](https://github.com/Error-Zhang) 在构建 VelarOS Desktop 的过程中设计和实现，随后从产品代码中解耦为宿主无关的公共库。仓库保留了原始提交历史。
-
-## 它解决什么问题
-
-流式 HTML 不能简单理解为“不断设置 `innerHTML`”。模型可能停在半个标签、半条 CSS 规则、半段脚本或 UTF-8/Base64 数据中；宿主还必须同时保证不可信代码隔离、聊天布局不振荡、错误可以定位。
-
-本库集中处理这些边界，但不依赖 React、Electron、Agent Loop 或特定模型服务。
+[English](./README.md) · [在线演示](https://error-zhang.github.io/VelarOS-HTML-Artifacts/)
 
 ## 安装
 
-首次发布 npm 之前，可以固定 GitHub 仓库或具体提交：
+首个 npm registry 版本正在准备中。在 `@velaros/html-artifacts` 正式发布前，请安装带版本标签的 GitHub Release：
 
 ```bash
-npm install github:Error-Zhang/VelarOS-HTML-Artifacts
+npm install Error-Zhang/VelarOS-HTML-Artifacts#v0.1.0
 ```
 
-仓库会提交编译后的 `dist/`，因此即使包管理器不会执行 Git 依赖的 `prepare` 脚本，也能直接消费固定提交。
+仓库会提交编译后的 `dist/`，npm、pnpm、Bun 和 Yarn 消费 Git 依赖时不需要额外执行构建脚本。
 
-清单中预留的 npm 包名是 `@velaros/html-artifacts`。
-
-## 使用方式
-
-协议解析：
+## 快速开始
 
 ```ts
+import { mountHtmlArtifact } from '@velaros/html-artifacts'
+
+const container = document.querySelector<HTMLElement>('#preview')
+if (!container) throw new Error('Missing #preview')
+
+const artifact = mountHtmlArtifact(container, {
+  maxHeight: 720,
+  onPrompt: (prompt) => sendToModel(prompt),
+  onLink: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
+  onError: (error) => console.error(error.phase, error.message),
+})
+
+await artifact.consume(modelTextStream)
+
+// 外层页面销毁时：
+artifact.dispose()
+```
+
+`modelTextStream` 可以是任意模型服务返回的 `AsyncIterable<string>`。本库不依赖 React、Electron、Agent Loop 或某一家模型 API。
+
+`mountHtmlArtifact()` 会在目标元素内创建一个 `sandbox="allow-scripts"` 的 iframe。生成代码只能在沙箱内运行；打开链接、继续提问等能力必须由宿主通过显式回调授权。
+
+## 手动接入已有流循环
+
+普通场景直接使用 `consume()`。如果应用已经有自己的流读取逻辑，可以改用 `write()` 和 `finish()`：
+
+```ts
+const artifact = mountHtmlArtifact(container, { maxHeight: 720 })
+
+for await (const chunk of modelTextStream) {
+  artifact.write(chunk)
+}
+artifact.finish()
+
+// 下一次回答复用同一个 iframe。
+artifact.reset()
+
+// 移除 iframe 和全部宿主监听器。
+artifact.dispose()
+```
+
+Chunk 可以停在半个 HTML 标签、CSS 规则、脚本或 Base64 数据中；只有完整、安全的协议边界才会进入 iframe。
+
+## 宿主回调
+
+```ts
+const artifact = mountHtmlArtifact(container, {
+  onMarkdown(text) {
+    appendToTranscript(text)
+  },
+  onPrompt(prompt) {
+    sendToModel(prompt)
+  },
+  onLink(url) {
+    openTrustedUrl(url)
+  },
+  onMessage(payload) {
+    handleArtifactMessage(payload)
+  },
+  onEvent(event) {
+    recordProtocolEvent(event)
+  },
+  onError(error) {
+    reportArtifactError(error)
+  },
+})
+```
+
+链接默认只允许 HTTP 和 HTTPS。无效或主动执行型 URL 会通过 `onError` 上报，不会进入 `onLink`。
+
+## 稳定高度
+
+```ts
+const artifact = mountHtmlArtifact(container, {
+  initialHeight: 360,
+  minHeight: 1,
+  maxHeight: 720,
+})
+```
+
+iframe 运行时只上报去重后的绝对内容高度，宿主直接应用，不再累加 padding，也不会把 viewport 增长反馈回测量过程。`maxHeight` 会同时在 iframe 内部和浏览器宿主层生效；超高内容或 `100vh` 等 viewport 耦合页面会留在沙箱内滚动，不会无限撑高外层界面。
+
+## Artifact 协议
+
+v1 协议保持有意的小规模：
+
+```html
+<artifact version="1" id="profile-card" title="Profile card">
+  <patch type="replace"><main id="app"></main></patch>
+  <patch type="append" target="#app"><h1>Hello</h1></patch>
+  <patch type="style" id="base">#app { padding: 24px; }</patch>
+  <patch type="script" id="boot">console.log('ready')</patch>
+</artifact>
+```
+
+当 Patch 内容本身包含协议闭合标签时，可以使用 `encoding="base64"`。
+
+## 高级 API
+
+绝大多数应用只需要从包根入口使用 `mountHtmlArtifact()`。需要自定义宿主时，再使用下面两个底层入口：
+
+```ts
+// 与渲染器无关的增量协议解析器。
 import {
   applyHtmlArtifactProtocolChunk,
   createHtmlArtifactProtocolStreamState,
   finalizeHtmlArtifactProtocol,
 } from '@velaros/html-artifacts/protocol'
 
-const state = createHtmlArtifactProtocolStreamState({ enabled: true })
-
-for await (const chunk of modelTextStream) {
-  for (const event of applyHtmlArtifactProtocolChunk(state, chunk)) {
-    renderEvent(event)
-  }
-}
-
-for (const event of finalizeHtmlArtifactProtocol(state)) {
-  renderEvent(event)
-}
+// iframe 文档、高度适配与 URL 安全原语。
+import {
+  buildHtmlArtifactShellDocument,
+  normalizeHtmlArtifactExternalUrl,
+  resolveHtmlArtifactFrameFit,
+} from '@velaros/html-artifacts/sandbox'
 ```
 
-沙箱文档：
+`@velaros/html-artifacts/runtime` 会作为 `./sandbox` 的兼容别名保留。
 
-```ts
-import { buildHtmlArtifactShellDocument } from '@velaros/html-artifacts/runtime'
+## API
 
-const iframe = document.createElement('iframe')
-iframe.setAttribute('sandbox', 'allow-scripts')
-iframe.srcdoc = buildHtmlArtifactShellDocument({
-  maxReportedHeight: 1200,
-})
-```
+### `mountHtmlArtifact(target, options?)`
 
-高度协商是单向的：运行时只回传去重后的绝对目标高度，宿主原样应用，不再额外累加 padding。回传高度受 `maxReportedHeight` 限制（默认 `1200`）；更高或与 viewport 耦合的内容会留在沙箱内滚动，不会无限撑高外层页面。
+在目标元素内挂载一个受管理的 Artifact iframe，返回 `HtmlArtifactController`。
 
-## 开源与私有边界
+主要选项：
 
-公共仓库只维护可复用机制，不承载 VelarOS 产品策略。以下内容继续由 Desktop 私有层负责：
+- `initialHeight`、`minHeight`、`maxHeight`：有界 iframe 高度。
+- `sandbox`：iframe sandbox token，默认只有 `allow-scripts`。
+- `designCss`、`rootId`、`title`、`className`：宿主展示接口。
+- `protocolLimits`：不可信或异常超长流的资源上限。
+- `onMarkdown`、`onPrompt`、`onLink`、`onMessage`、`onEvent`、`onError`：宿主回调。
 
-- 模型系统提示词与工具选择策略；
-- 会话状态、持久化、中止恢复与 Agent 调度；
-- Electron IPC、Desktop 事件和权限策略；
-- 品牌主题、工具栏、全屏层等产品 UI；
-- Widget、Memory、Policy 与 VelarOS Kernel 的内部实现。
+Controller 方法：
 
-Widget 和 HTML Artifact 可以共同消费本库的通用 iframe runtime，但本库不知道 Widget 的存在，因此不存在反向依赖。
+- `consume(stream)`：消费文本 Chunk 迭代器并返回最近的协议快照。
+- `write(chunk)`：解析并渲染一个 Chunk。
+- `finish()`：结束流并刷新不完整的尾部内容。
+- `getSnapshot(id?)`：读取最近的解析器快照。
+- `reset()`：清空协议状态和 iframe 内容，但保留挂载实例。
+- `dispose()`：移除 iframe 与全部监听器。
 
-## 维护方式
+## 开源边界与维护方式
 
-公开仓库是唯一源码。通用修复先在这里合入并发布版本，VelarOS Desktop 再升级到准确版本；Desktop 适配层不复制本仓库源码。
+本仓库只维护可复用的流式协议与沙箱机制，不包含模型提示词、聊天状态、Agent 调度、Electron IPC、产品 UI、权限、Widget、Memory 或 VelarOS Kernel 内部实现。
+
+公共仓库是唯一源码。通用修复先在这里合入；产品只消费准确发布版本，并在私有仓库保留自己的适配层。
+
+## 开发
 
 ```bash
 npm install
 npm run check
 npm run demo
 ```
+
+`npm run check` 会执行 TypeScript 检查、Node 测试、生产 Demo 构建和 npm 包 dry run。
+
+## 安全
+
+生成 HTML 属于不可信输入。修改沙箱、脚本、URL 或消息桥前，请先阅读 [SECURITY.md](./SECURITY.md)。
 
 ## 许可证
 
