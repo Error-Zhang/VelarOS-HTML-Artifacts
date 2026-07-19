@@ -38,6 +38,8 @@ Until the first npm publication, pin the GitHub repository or a release commit:
 npm install github:Error-Zhang/VelarOS-HTML-Artifacts
 ```
 
+The compiled `dist/` directory is versioned so Git dependencies also work in package managers that do not run dependency `prepare` scripts.
+
 The npm package name is reserved in the manifest as `@velaros/html-artifacts`.
 
 ## Protocol parser

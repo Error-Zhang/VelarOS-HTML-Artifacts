@@ -23,6 +23,8 @@
 npm install github:Error-Zhang/VelarOS-HTML-Artifacts
 ```
 
+仓库会提交编译后的 `dist/`，因此即使包管理器不会执行 Git 依赖的 `prepare` 脚本，也能直接消费固定提交。
+
 清单中预留的 npm 包名是 `@velaros/html-artifacts`。
 
 ## 使用方式
