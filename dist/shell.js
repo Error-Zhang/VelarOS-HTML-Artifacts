@@ -1,4 +1,4 @@
-import { createHtmlArtifactHeightController } from './height-controller.js';
+import { HTML_ARTIFACT_HEIGHT_CONTROLLER_FACTORY_SOURCE } from './height-controller.js';
 const DEFAULT_ROOT_ID = 'velaros-html-artifact-root';
 /** Safe default that prevents viewport-relative artifact CSS from growing an iframe forever. */
 export const DEFAULT_HTML_ARTIFACT_MAX_REPORTED_HEIGHT = 1200;
@@ -113,8 +113,7 @@ function bridgeHeadScript(messages) {
 //   maxReportedHeight 都是硬上限,超过后由 iframe 内部滚动承接。
 // - 回传在源头按 1px 容差去重,宿主只会收到唯一目标值,不会参与二次补偿。
 function heightControllerScript(maxReportedHeight) {
-    const factorySource = createHtmlArtifactHeightController.toString();
-    return (`var heightController=(${factorySource})(${maxReportedHeight});` +
+    return (`var heightController=(${HTML_ARTIFACT_HEIGHT_CONTROLLER_FACTORY_SOURCE})(${maxReportedHeight});` +
         `function invalidateHeightMeasurement(){heightController.invalidate();}` +
         `function resolveReportedHeight(base){` +
         `var doc=document.documentElement||{};` +

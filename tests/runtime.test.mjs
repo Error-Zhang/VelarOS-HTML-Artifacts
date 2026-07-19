@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { createHtmlArtifactHeightController } from '../dist/height-controller.js'
+import { HTML_ARTIFACT_HEIGHT_CONTROLLER_FACTORY_SOURCE } from '../dist/height-controller.js'
 import {
   buildHtmlArtifactShellDocument,
   DEFAULT_HTML_ARTIFACT_MAX_REPORTED_HEIGHT,
@@ -77,6 +77,9 @@ describe('HTML artifact runtime', () => {
   })
 
   test('settles shrink, feedback, deduplication, and hard caps in one controller', () => {
+    const createHtmlArtifactHeightController = Function(
+      `return (${HTML_ARTIFACT_HEIGHT_CONTROLLER_FACTORY_SOURCE})`
+    )()
     const controller = createHtmlArtifactHeightController(720)
 
     assert.equal(
