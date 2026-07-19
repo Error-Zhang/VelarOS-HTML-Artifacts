@@ -1,5 +1,5 @@
 import type { HtmlArtifactRenderPatch } from './protocol.js'
-import { createHtmlArtifactHeightController } from './height-controller.js'
+import { HTML_ARTIFACT_HEIGHT_CONTROLLER_FACTORY_SOURCE } from './height-controller.js'
 
 export type HtmlArtifactContentKind = 'html' | 'svg'
 
@@ -165,10 +165,8 @@ function bridgeHeadScript(messages: HtmlArtifactBridgeMessages): string {
 //   maxReportedHeight 都是硬上限,超过后由 iframe 内部滚动承接。
 // - 回传在源头按 1px 容差去重,宿主只会收到唯一目标值,不会参与二次补偿。
 function heightControllerScript(maxReportedHeight: number): string {
-  const factorySource = createHtmlArtifactHeightController.toString()
-
   return (
-    `var heightController=(${factorySource})(${maxReportedHeight});` +
+    `var heightController=(${HTML_ARTIFACT_HEIGHT_CONTROLLER_FACTORY_SOURCE})(${maxReportedHeight});` +
     `function invalidateHeightMeasurement(){heightController.invalidate();}` +
     `function resolveReportedHeight(base){` +
     `var doc=document.documentElement||{};` +

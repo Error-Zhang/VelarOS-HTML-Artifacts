@@ -1,21 +1,6 @@
-export interface HtmlArtifactHeightMeasurement {
-    baseHeight: number;
-    clientHeight: number;
-    scrollHeight: number;
-}
-export interface HtmlArtifactPublishedSize {
-    height: number;
-    width: number;
-}
-export interface HtmlArtifactHeightController {
-    invalidate(): void;
-    resolve(measurement: HtmlArtifactHeightMeasurement): number;
-    shouldPublish(size: HtmlArtifactPublishedSize): boolean;
-}
 /**
- * Owns the complete iframe height negotiation state. The function is deliberately self-contained:
- * the sandbox runtime serializes this factory into generated iframe documents, while tests exercise
- * the same implementation directly.
+ * Self-contained factory injected into generated iframe documents. Keeping the executable source as
+ * an explicit string makes production bundling deterministic; tests execute this exact same source.
  */
-export declare function createHtmlArtifactHeightController(maxReportedHeight: number): HtmlArtifactHeightController;
+export declare const HTML_ARTIFACT_HEIGHT_CONTROLLER_FACTORY_SOURCE = "function(maxReportedHeight){\n  var heightLimit=Number.isFinite(maxReportedHeight)&&maxReportedHeight>0?Math.max(1,Math.ceil(maxReportedHeight)):1200;\n  var contentFloor=0;\n  var feedbackFrozenHeight=0;\n  var previousClientHeight=0;\n  var previousScrollHeight=0;\n  var feedbackSteps=0;\n  var lastPublishedHeight=0;\n  var lastPublishedWidth=0;\n  function clampHeight(value){return Math.max(1,Math.min(heightLimit,Math.ceil(Number(value)||1)));}\n  function normalizeWidth(value){return Math.max(1,Math.ceil(Number(value)||1));}\n  return{\n    invalidate:function(){\n      contentFloor=0;\n      feedbackFrozenHeight=0;\n      previousClientHeight=0;\n      previousScrollHeight=0;\n      feedbackSteps=0;\n    },\n    resolve:function(measurement){\n      var baseHeight=Math.max(1,Math.ceil(Number(measurement.baseHeight)||1));\n      var clientHeight=Math.max(0,Math.ceil(Number(measurement.clientHeight)||0));\n      var scrollHeight=Math.max(0,Math.ceil(Number(measurement.scrollHeight)||0));\n      if(feedbackFrozenHeight)return feedbackFrozenHeight;\n      if(scrollHeight>clientHeight+1){\n        if(previousClientHeight&&clientHeight>previousClientHeight){\n          var clientGrowth=clientHeight-previousClientHeight;\n          var contentGrowth=scrollHeight-previousScrollHeight;\n          feedbackSteps=contentGrowth>=clientGrowth-1?feedbackSteps+1:0;\n        }\n        previousClientHeight=clientHeight;\n        previousScrollHeight=scrollHeight;\n        contentFloor=Math.max(contentFloor,scrollHeight);\n        if(feedbackSteps>=2){\n          feedbackFrozenHeight=clampHeight(clientHeight);\n          return feedbackFrozenHeight;\n        }\n        return clampHeight(Math.max(baseHeight,scrollHeight));\n      }\n      previousClientHeight=0;\n      previousScrollHeight=0;\n      feedbackSteps=0;\n      return clampHeight(Math.max(baseHeight,contentFloor));\n    },\n    shouldPublish:function(size){\n      var height=clampHeight(size.height);\n      var width=normalizeWidth(size.width);\n      if(Math.abs(height-lastPublishedHeight)<=1&&Math.abs(width-lastPublishedWidth)<=1)return false;\n      lastPublishedHeight=height;\n      lastPublishedWidth=width;\n      return true;\n    }\n  };\n}";
 //# sourceMappingURL=height-controller.d.ts.map
