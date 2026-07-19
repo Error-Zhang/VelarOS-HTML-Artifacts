@@ -51,7 +51,6 @@
     "demo": "npm run build && vite demo",
     "demo:build": "npm run build && vite build demo --outDir ../demo-dist --emptyOutDir",
     "check": "npm run typecheck && npm test && npm run demo:build && npm pack --dry-run",
-    "prepare": "npm run build",
     "prepack": "npm run build"
   },
   "devDependencies": {
