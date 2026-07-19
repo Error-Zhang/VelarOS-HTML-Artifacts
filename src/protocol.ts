@@ -191,7 +191,7 @@ function clipTail(value: string, maxLength: number): string {
 
 function clampArtifactTitle(title: string): string {
   const normalizedTitle = title.replace(/\s+/g, ' ').trim()
-  return normalizedTitle.slice(0, MAX_ARTIFACT_TITLE_LENGTH) || 'HTML Artifact'
+  return normalizedTitle.slice(0, MAX_ARTIFACT_TITLE_LENGTH) || 'HTML Live Preview'
 }
 
 function normalizeExplicitArtifactId(id: string): Nullable<string> {

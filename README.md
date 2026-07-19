@@ -1,10 +1,10 @@
 # @velaros/html-artifacts
 
-Shared HTML Artifact protocol and iframe document helpers for VelarOS.
+Shared HTML Live Preview protocol and iframe document helpers for VelarOS.
 
 ## Responsibility
 
-`@velaros/html-artifacts` owns the reusable parts of streamed HTML Artifact rendering:
+`@velaros/html-artifacts` owns the reusable parts of streamed HTML Live Preview rendering:
 
 - Parse model protocol chunks into renderer-neutral events.
 - Build sandbox iframe documents for static HTML export and live DOM patch rendering.
