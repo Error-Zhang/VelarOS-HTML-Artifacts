@@ -58,8 +58,12 @@ import { buildHtmlArtifactShellDocument } from '@velaros/html-artifacts/runtime'
 
 const iframe = document.createElement('iframe')
 iframe.setAttribute('sandbox', 'allow-scripts')
-iframe.srcdoc = buildHtmlArtifactShellDocument()
+iframe.srcdoc = buildHtmlArtifactShellDocument({
+  maxReportedHeight: 1200,
+})
 ```
+
+高度协商是单向的：运行时只回传去重后的绝对目标高度，宿主原样应用，不再额外累加 padding。回传高度受 `maxReportedHeight` 限制（默认 `1200`）；更高或与 viewport 耦合的内容会留在沙箱内滚动，不会无限撑高外层页面。
 
 ## 开源与私有边界
 

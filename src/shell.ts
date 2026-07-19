@@ -1,4 +1,5 @@
 import type { HtmlArtifactRenderPatch } from './protocol.js'
+import { createHtmlArtifactHeightController } from './height-controller.js'
 
 export type HtmlArtifactContentKind = 'html' | 'svg'
 
@@ -19,6 +20,8 @@ export interface HtmlArtifactDocumentOptions {
   bodyStyle?: string
   bridgeMessages?: Partial<HtmlArtifactBridgeMessages>
   initialPatches?: readonly HtmlArtifactRenderPatch[]
+  /** Maximum height the iframe runtime may request from its host before using internal scrolling. */
+  maxReportedHeight?: number
 }
 
 export interface HtmlArtifactShellDocumentOptions extends HtmlArtifactDocumentOptions {
@@ -26,6 +29,9 @@ export interface HtmlArtifactShellDocumentOptions extends HtmlArtifactDocumentOp
 }
 
 const DEFAULT_ROOT_ID = 'velaros-html-artifact-root'
+
+/** Safe default that prevents viewport-relative artifact CSS from growing an iframe forever. */
+export const DEFAULT_HTML_ARTIFACT_MAX_REPORTED_HEIGHT = 1200
 
 /** The iframe asks its host to continue a wheel gesture when the document itself cannot scroll. */
 export const HTML_ARTIFACT_WHEEL_MESSAGE_TYPE = 'velaros:html-artifact-wheel'
@@ -91,6 +97,12 @@ function resolveBridgeMessages(
   return { ...DEFAULT_BRIDGE_MESSAGES, ...messages }
 }
 
+function resolveMaxReportedHeight(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.ceil(value))
+    : DEFAULT_HTML_ARTIFACT_MAX_REPORTED_HEIGHT
+}
+
 function resolveBodyStyle(
   kind: HtmlArtifactContentKind,
   bodyStyle: string | undefined
@@ -146,43 +158,30 @@ function bridgeHeadScript(messages: HtmlArtifactBridgeMessages): string {
   )
 }
 
-// 高度守卫(静态/live 两条测量路径共用单源):
-// - contentFloor=真溢出时刻的 scrollHeight,是内容高的**真值**(scrollHeight>视口时不再被视口
-//   托底)。收缩不允许低于它——否则「增长信 scrollHeight/收缩信子元素测量」两个来源一旦
-//   分歧就互搏,iframe 高度在两值间永久振荡、把制品下方正文抖上抖下(真机踩坑)。
-// - viewportCoupled 断 vh 反馈回路:每次按溢出增高后,内容若跟着同步增高(连续两轮
-//   fullΔ≥clientΔ),说明内容高是视口高的函数(100vh/百分比链——流中被关的截断半成品
-//   尤其常见),继续喂高度只会无限膨胀;冻结在当前高度,真实 DOM 变更(resetHeightGuards)
-//   后重新放行。冻结时必须返回 client 而非子元素测量:vh 耦合下子元素 bottom 本身就含
-//   随视口增长的溢出,取它等于绕过冻结继续膨胀。
-// - DOM 变更时守卫整体归零,内容真变矮时先缩一步、若过头由溢出分支纠正并重建地板,一轮收敛。
-function heightGuardScript(): string {
+// 单一高度控制器(静态/live 两条测量路径共用):
+// - 只有真实 DOM/style patch 会使旧测量失效;宿主按回传高度调整 iframe 不会重置状态。
+// - 溢出时记录 scrollHeight 地板,避免 scrollHeight 与子元素几何值互相拉扯。
+// - 连续两轮随 viewport 等量增长即判定为 100vh/百分比反馈并冻结;无论是否识别成功,
+//   maxReportedHeight 都是硬上限,超过后由 iframe 内部滚动承接。
+// - 回传在源头按 1px 容差去重,宿主只会收到唯一目标值,不会参与二次补偿。
+function heightControllerScript(maxReportedHeight: number): string {
+  const factorySource = createHtmlArtifactHeightController.toString()
+
   return (
-    `var contentFloor=0;var viewportCoupled=false;var growClient=0;var growFull=0;var coupleStrikes=0;` +
-    `function resetHeightGuards(){contentFloor=0;viewportCoupled=false;growClient=0;growFull=0;coupleStrikes=0;}` +
-    `function measureFullHeight(base){` +
+    `var heightController=(${factorySource})(${maxReportedHeight});` +
+    `function invalidateHeightMeasurement(){heightController.invalidate();}` +
+    `function resolveReportedHeight(base){` +
     `var doc=document.documentElement||{};` +
-    `var client=doc.clientHeight||0;` +
-    `var full=Math.max(doc.scrollHeight||0,(document.body&&document.body.scrollHeight)||0);` +
-    `if(full>client+1){` +
-    `if(growClient&&client>growClient){` +
-    `if((full-growFull)>=(client-growClient)-24){coupleStrikes+=1;}else{coupleStrikes=0;}` +
-    `if(coupleStrikes>=2)viewportCoupled=true;` +
+    `return heightController.resolve({baseHeight:base,clientHeight:doc.clientHeight||0,scrollHeight:Math.max(doc.scrollHeight||0,(document.body&&document.body.scrollHeight)||0)});` +
     `}` +
-    `growClient=client;growFull=full;` +
-    `contentFloor=full;` +
-    `if(viewportCoupled)return client;` +
-    `var need=client+Math.min(full-client,400);return Math.max(base,need);` +
-    `}` +
-    `growClient=0;growFull=0;coupleStrikes=0;` +
-    `var target=Math.max(base,contentFloor);` +
-    `if(target<client-24)return target;` +
-    `return Math.max(target,client);` +
-    `}`
+    `function shouldPublishMeasuredSize(height,width){return heightController.shouldPublish({height:height,width:width});}`
   )
 }
 
-function resizeTailScript(messages: HtmlArtifactBridgeMessages): string {
+function resizeTailScript(
+  messages: HtmlArtifactBridgeMessages,
+  maxReportedHeight: number
+): string {
   return (
     `(function(){` +
     `function measureContentSize(target){` +
@@ -204,16 +203,15 @@ function resizeTailScript(messages: HtmlArtifactBridgeMessages): string {
     `try{var bs=window.getComputedStyle(document.body);height+=(parseFloat(bs.paddingBottom)||0)+(parseFloat(bs.marginBottom)||0)+(parseFloat(bs.borderBottomWidth)||0);}catch(e){}` +
     `return{width:Math.max(1,Math.ceil(width)),height:Math.max(1,Math.ceil(height))};` +
     `}` +
-    // 平铺硬保证:iframe 高度必须 ≥ 浏览器认定的可滚总高(doc.scrollHeight,含一切
-    // padding/margin/溢出),否则内容仍可滚。子元素测量做下限,scrollHeight 补齐真实溢出;
-    // 守卫细节见 heightGuardScript 注释(振荡地板+vh 反馈回路冻结)。
-    `${heightGuardScript()}function reportHeight(){` +
+    // 高度在统一控制器内收敛并受硬上限约束;超过上限时保留 iframe 内部滚动。
+    `${heightControllerScript(maxReportedHeight)}function reportHeight(){` +
     `var size=measureContentSize(document.body);` +
-    `var height=measureFullHeight(size.height);` +
+    `var height=resolveReportedHeight(size.height);` +
+    `if(!shouldPublishMeasuredSize(height,size.width))return;` +
     `window.parent.postMessage({type:${jsString(messages.resize)},height:height,width:size.width,naturalHeight:height,naturalWidth:size.width,rendered:true},'*');` +
     `}` +
     `if(window.ResizeObserver){new ResizeObserver(reportHeight).observe(document.body);}` +
-    `if(window.MutationObserver&&document.body){new MutationObserver(function(){resetHeightGuards();}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
+    `if(window.MutationObserver&&(document.documentElement||document.body)){new MutationObserver(function(){invalidateHeightMeasurement();reportHeight();}).observe(document.documentElement||document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
     `window.addEventListener('resize',reportHeight);` +
     `window.addEventListener('load',function(){setTimeout(reportHeight,120);setTimeout(reportHeight,420);});` +
     `setTimeout(reportHeight,40);` +
@@ -365,7 +363,11 @@ function patchRuntimeScript(rootExpression: string, _messages: HtmlArtifactBridg
   )
 }
 
-function liveRenderTailScript(rootId: string, messages: HtmlArtifactBridgeMessages): string {
+function liveRenderTailScript(
+  rootId: string,
+  messages: HtmlArtifactBridgeMessages,
+  maxReportedHeight: number
+): string {
   return (
     `(function(){${patchRuntimeScript(
       `document.getElementById(${jsString(rootId)})`,
@@ -395,13 +397,12 @@ function liveRenderTailScript(rootId: string, messages: HtmlArtifactBridgeMessag
     `return{width:Math.max(1,Math.ceil(width)),height:Math.max(1,Math.ceil(height))};` +
     `}` +
     `var hasRendered=false;` +
-    // 平铺硬保证(与静态文档路径同一份守卫):高度取 max(子元素测量, doc.scrollHeight),
-    // 保证 iframe 内部零可滚;振荡地板+vh 反馈回路冻结见 heightGuardScript 注释,
-    // DOM 变更/重渲染时守卫归零。
-    `${heightGuardScript()}function reportHeight(){` +
+    // 与静态文档路径共用同一控制器:精确收敛、源头去重、反馈冻结和硬上限。
+    `${heightControllerScript(maxReportedHeight)}function reportHeight(){` +
     `if(!hasRendered)return;` +
     `var size=measureContentSize(root||document.body);` +
-    `var height=measureFullHeight(size.height);` +
+    `var height=resolveReportedHeight(size.height);` +
+    `if(!shouldPublishMeasuredSize(height,size.width))return;` +
     `window.parent.postMessage({type:${jsString(messages.resize)},height:height,width:size.width,naturalHeight:height,naturalWidth:size.width,rendered:true},'*');` +
     `}` +
     `function reportSoon(){` +
@@ -413,6 +414,7 @@ function liveRenderTailScript(rootId: string, messages: HtmlArtifactBridgeMessag
     `pendingPatchFrame=0;` +
     `var patches=pendingPatches;` +
     `pendingPatches=[];` +
+    `invalidateHeightMeasurement();` +
     `applyPatches(patches);` +
     `dispatchArtifactReady();` +
     `reportSoon();` +
@@ -426,11 +428,11 @@ function liveRenderTailScript(rootId: string, messages: HtmlArtifactBridgeMessag
     `window.addEventListener('message',function(event){` +
     `if(event.source!==window.parent)return;` +
     `var data=event.data||{};` +
-    `if(data.type===${jsString(messages.render)}){resetHeightGuards();render(data.html,data.patches);hasRendered=true;reportSoon();}` +
+    `if(data.type===${jsString(messages.render)}){invalidateHeightMeasurement();render(data.html,data.patches);hasRendered=true;reportSoon();}` +
     `if(data.type===${jsString(messages.patch)}){queuePatches(data.patches||(data.patch?[data.patch]:[]));}` +
     `});` +
     `if(window.ResizeObserver){var resizeObserver=new ResizeObserver(reportHeight);if(root)resizeObserver.observe(root);if(document.body)resizeObserver.observe(document.body);}` +
-    `if(window.MutationObserver&&document.body){new MutationObserver(function(){resetHeightGuards();reportSoon();}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
+    `if(window.MutationObserver&&(document.documentElement||document.body)){new MutationObserver(function(){invalidateHeightMeasurement();reportSoon();}).observe(document.documentElement||document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','width','height']});}` +
     `window.addEventListener('resize',reportHeight);` +
     `window.addEventListener('load',function(){setTimeout(reportHeight,80);setTimeout(reportHeight,360);});` +
     `setTimeout(reportHeight,40);` +
@@ -453,8 +455,8 @@ function initialPatchesTailScript(
   )
 }
 
-// 制品 iframe 高度由测量脚本按内容自适应,自身永远不该露滚动条;测量有零点几帧滞后或
-// 内容含 vh 时会短暂溢出——把滚动条隐藏(不裁剪、仍可滚)兜住视觉,与聊天页无缝融合。
+// 制品 iframe 在上限内按内容自适应;超过 maxReportedHeight 或遇到 viewport 反馈时保留
+// 内部滚动。滚动条本身隐藏(不裁剪、仍可滚),让沙箱和宿主视觉连续。
 const HIDE_IFRAME_SCROLLBAR_CSS =
   'html,body{scrollbar-width:none;}html::-webkit-scrollbar,body::-webkit-scrollbar{width:0;height:0;display:none;}'
 
@@ -465,6 +467,7 @@ export function buildHtmlArtifactDocument(
   const content = normalizeHtmlArtifactSource(rawContent)
   const kind = options.contentKind ?? inferHtmlArtifactContentKind(content)
   const messages = resolveBridgeMessages(options.bridgeMessages)
+  const maxReportedHeight = resolveMaxReportedHeight(options.maxReportedHeight)
   const bodyStyle = resolveBodyStyle(kind, options.bodyStyle)
   const svgCss = kind === 'svg' ? options.svgFitCss ?? '' : ''
 
@@ -476,7 +479,7 @@ export function buildHtmlArtifactDocument(
       options.initialPatches ?? [],
       messages
     )}</script>` +
-    `<script>${resizeTailScript(messages)}</script></body></html>`
+    `<script>${resizeTailScript(messages, maxReportedHeight)}</script></body></html>`
   )
 }
 
@@ -486,6 +489,7 @@ export function buildHtmlArtifactShellDocument(
   const rootId = options.rootId ?? DEFAULT_ROOT_ID
   const kind = options.contentKind ?? 'html'
   const messages = resolveBridgeMessages(options.bridgeMessages)
+  const maxReportedHeight = resolveMaxReportedHeight(options.maxReportedHeight)
   const bodyStyle = resolveBodyStyle(kind, options.bodyStyle)
   const svgCss = kind === 'svg' ? options.svgFitCss ?? '' : ''
 
@@ -495,6 +499,6 @@ export function buildHtmlArtifactShellDocument(
     `<style>${HIDE_IFRAME_SCROLLBAR_CSS}${options.designCss ?? ''}${svgCss}body{${bodyStyle}}#${escapeHtmlAttribute(rootId)}{width:100%;min-width:0;}</style>` +
     `<script>${bridgeHeadScript(messages)}</script></head><body>` +
     `<div id="${escapeHtmlAttribute(rootId)}"></div>` +
-    `<script>${liveRenderTailScript(rootId, messages)}</script></body></html>`
+    `<script>${liveRenderTailScript(rootId, messages, maxReportedHeight)}</script></body></html>`
   )
 }
